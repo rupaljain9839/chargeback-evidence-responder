@@ -1,0 +1,86 @@
+{
+  "models_compared": [
+    {
+      "model": "LogisticRegression",
+      "precision": 0.1899,
+      "recall": 0.939,
+      "f1": 0.3159,
+      "roc_auc": 0.9918,
+      "confusion_matrix": {
+        "tn": 35778,
+        "fp": 1378,
+        "fn": 21,
+        "tp": 323
+      },
+      "false_positive_cost_inr": 20670.0,
+      "fraud_missed_cost_inr": 10500.0,
+      "fraud_caught_saved_inr": 161500.0,
+      "net_value_inr": 130330.0
+    },
+    {
+      "model": "RandomForest",
+      "precision": 0.7321,
+      "recall": 0.9215,
+      "f1": 0.816,
+      "roc_auc": 0.998,
+      "confusion_matrix": {
+        "tn": 37040,
+        "fp": 116,
+        "fn": 27,
+        "tp": 317
+      },
+      "false_positive_cost_inr": 1740.0,
+      "fraud_missed_cost_inr": 13500.0,
+      "fraud_caught_saved_inr": 158500.0,
+      "net_value_inr": 143260.0
+    }
+  ],
+  "best_model": "RandomForest",
+  "feature_importances": {
+    "synth_device_ip_match": 0.2848,
+    "amt_zscore_in_category": 0.2387,
+    "synth_days_to_dispute": 0.1862,
+    "amt": 0.1662,
+    "hour": 0.043,
+    "synth_prior_dispute_count": 0.0425,
+    "is_night": 0.0133,
+    "age": 0.0077,
+    "city_pop_log": 0.0076,
+    "distance_km": 0.006,
+    "day_of_week": 0.004
+  },
+  "cost_assumptions": {
+    "cost_per_false_positive_inr": 15.0,
+    "avg_fraud_loss_if_missed_inr": 500.0
+  },
+  "real_features_only_comparison": {
+    "result": {
+      "model": "RandomForest_RealOnly",
+      "precision": 0.3629,
+      "recall": 0.8808,
+      "f1": 0.514,
+      "roc_auc": 0.9912,
+      "confusion_matrix": {
+        "tn": 36624,
+        "fp": 532,
+        "fn": 41,
+        "tp": 303
+      },
+      "false_positive_cost_inr": 7980.0,
+      "fraud_missed_cost_inr": 20500.0,
+      "fraud_caught_saved_inr": 151500.0,
+      "net_value_inr": 123020.0
+    },
+    "feature_importances": {
+      "amt_zscore_in_category": 0.4028,
+      "amt": 0.3427,
+      "hour": 0.1359,
+      "is_night": 0.0487,
+      "city_pop_log": 0.0224,
+      "age": 0.0223,
+      "distance_km": 0.0132,
+      "day_of_week": 0.0122
+    },
+    "note": "Trained on the same Random Forest architecture using ONLY features derived from real dataset columns (no synth_ dispute-layer fields). Included to demonstrate the model learns genuine fraud patterns from real data, not just synthetic dispute metadata."
+  }
+}
