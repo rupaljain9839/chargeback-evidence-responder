@@ -628,20 +628,28 @@ with tab1:
             elif sample_type == "Known legitimate case":
                 row = df[df["is_fraud"] == 0].sample(1).iloc[0]
             elif sample_type == "Missing-data case (triggers escalation)":
-                # Only sample rows where the missing delivery field is
-                # actually required for that row's dispute reason —
-                # otherwise the completeness score can still hit 100%
-                # and the case won't escalate (e.g. credit_not_processed
-                # doesn't need delivery confirmation at all).
+                # Only sample rows where the missing delivery field is a
+                # CRITICAL requirement for that row's dispute reason —
+                # missing a non-critical item no longer forces escalation
+                # (see evidence_checklist.py's critical/supporting split),
+                # so this must specifically target dispute reasons where
+                # delivery confirmation is critical.
                 reasons_needing_delivery = [
                     r for r, reqs in EVIDENCE_REQUIREMENTS.items()
-                    if "delivery_confirmation" in reqs
+                    if "delivery_confirmation" in reqs["critical"]
                 ]
                 missing = df[
                     df["synth_delivery_confirmed"].isna()
                     & df["synth_dispute_reason"].isin(reasons_needing_delivery)
                 ]
-                row = missing.sample(1).iloc[0]
+                if len(missing) > 0:
+                    row = missing.sample(1).iloc[0]
+                else:
+                    # Fallback: shouldn't happen with this dataset, but
+                    # never crash the demo — fall back to any missing-
+                    # delivery row even if not critical for its reason.
+                    fallback = df[df["synth_delivery_confirmed"].isna()]
+                    row = fallback.sample(1).iloc[0] if len(fallback) > 0 else df.sample(1).iloc[0]
             else:
                 row = df.sample(1).iloc[0]
             st.session_state["current_row"] = row
