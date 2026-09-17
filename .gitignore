@@ -1,0 +1,23 @@
+# Secrets — never commit real API keys
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Large data files — keep the repo light; document how to obtain them instead
+data/raw/*.csv
+
+# Generated/runtime artifacts (optional to keep tracked — remove these
+# two lines if you want your audit trail / trained model checked into
+# the repo for the judges to inspect directly)
+# logs/audit_trail.jsonl
+# models/classifier.pkl
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+.vscode/

@@ -9,16 +9,18 @@ the classifier's fraud probability) and produces a structured decision:
     (or a chargeback response form) can actually use.
 
 Every decision passes through guardrails.decide_with_guardrails(), which
-enforces the bounded action set and the missing-data escalation rule
-BEFORE anything is logged or shown to the user. The LLM never has the
-final word on its own — the guardrail layer does.
+enforces the bounded action set and evidence-based escalation BEFORE
+anything is logged or shown to the user. The LLM never has the final
+word on its own — the guardrail layer does.
 
-Two modes:
-  - LLM mode: calls the Anthropic API to generate reasoning (requires
-    ANTHROPIC_API_KEY in environment). Used for the real demo.
-  - Rule-based fallback mode: used automatically if no API key is set,
+Three modes, in priority order:
+  - Groq (fast, generous free tier — good default for a student project):
+    requires GROQ_API_KEY in environment.
+  - Anthropic (Claude): requires ANTHROPIC_API_KEY in environment.
+    Used if Groq isn't configured.
+  - Rule-based fallback: used automatically if neither key is present,
     or for fast local testing without burning API calls. Keeps the
-    pipeline runnable end-to-end at all times.
+    pipeline runnable end-to-end at all times, in every mode.
 """
 
 import os
@@ -27,10 +29,29 @@ from guardrails import decide_with_guardrails, DisputeAction
 from evidence_checklist import assess_evidence
 
 try:
+    from dotenv import load_dotenv
+    load_dotenv()  # loads GROQ_API_KEY / ANTHROPIC_API_KEY from a .env
+    # file in the project root, if one exists — no-ops safely if it
+    # doesn't (falls back to whatever's already in the environment).
+except ImportError:
+    pass
+
+try:
     import anthropic
     _ANTHROPIC_AVAILABLE = True
 except ImportError:
     _ANTHROPIC_AVAILABLE = False
+
+try:
+    from groq import Groq
+    _GROQ_AVAILABLE = True
+except ImportError:
+    _GROQ_AVAILABLE = False
+
+# Groq model to use for reasoning. Configurable via env var so this can
+# be swapped without touching code (e.g. a smaller/faster model for
+# quick demos vs. a larger one for final testing).
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
 SYSTEM_PROMPT = """You are a chargeback evidence assistant for a payments platform.
@@ -74,7 +95,13 @@ required for this dispute reason):
 Recommend ACCEPT or CONTEST with reasoning citing the evidence above."""
 
 
-def _propose_action_llm(record: dict, evidence_packet: dict) -> dict:
+def _extract_json(text: str) -> dict:
+    """Strip accidental markdown fences some models add, then parse."""
+    text = text.strip().replace("```json", "").replace("```", "").strip()
+    return json.loads(text)
+
+
+def _propose_action_anthropic(record: dict, evidence_packet: dict) -> dict:
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
     response = client.messages.create(
         model="claude-sonnet-4-6",
@@ -82,10 +109,24 @@ def _propose_action_llm(record: dict, evidence_packet: dict) -> dict:
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": _build_user_prompt(record, evidence_packet)}],
     )
-    text = response.content[0].text.strip()
-    # Strip accidental markdown fences if the model adds them
-    text = text.replace("```json", "").replace("```", "").strip()
-    parsed = json.loads(text)
+    text = response.content[0].text
+    parsed = _extract_json(text)
+    return {"action": parsed.get("action", ""), "reasoning": parsed.get("reasoning", "")}
+
+
+def _propose_action_groq(record: dict, evidence_packet: dict) -> dict:
+    client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        max_tokens=300,
+        temperature=0.2,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": _build_user_prompt(record, evidence_packet)},
+        ],
+    )
+    text = response.choices[0].message.content
+    parsed = _extract_json(text)
     return {"action": parsed.get("action", ""), "reasoning": parsed.get("reasoning", "")}
 
 
@@ -129,6 +170,21 @@ def _propose_action_rule_based(record: dict, evidence_packet: dict) -> dict:
     return {"action": action, "reasoning": reasoning}
 
 
+def _select_provider() -> str:
+    """
+    Priority order: Groq (free-tier friendly) > Anthropic > rule-based.
+    Explicit env var LLM_PROVIDER=groq|anthropic|none overrides this if set.
+    """
+    forced = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    if forced in ("groq", "anthropic", "none"):
+        return forced
+    if _GROQ_AVAILABLE and os.environ.get("GROQ_API_KEY"):
+        return "groq"
+    if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    return "none"
+
+
 def get_evidence_decision(record: dict, use_llm: bool = None) -> dict:
     """
     Main entry point — runs the full multi-step workflow:
@@ -137,32 +193,40 @@ def get_evidence_decision(record: dict, use_llm: bool = None) -> dict:
       2. Check what evidence is actually present, compute a completeness
          score
       3. Pass everything through guardrails: if the classifier score is
-         missing OR evidence completeness is below threshold, escalate
-         immediately — no LLM/rule call happens
-      4. Otherwise, call the LLM (or rule-based fallback) to reason over
-         the evidence packet and recommend ACCEPT/CONTEST
+         missing OR critical evidence for this dispute reason is
+         missing, escalate immediately — no LLM/rule call happens
+      4. Otherwise, call Groq, Anthropic, or the rule-based fallback
+         (in that priority order, or as forced by LLM_PROVIDER) to
+         reason over the evidence packet and recommend ACCEPT/CONTEST
       5. Bounded-action enforcement on whatever comes back
 
+    `use_llm=False` forces the rule-based path regardless of configured
+    keys (useful for fast local testing without spending API credits).
     Returns the decision dict plus the evidence_packet for display/audit.
     """
-    if use_llm is None:
-        use_llm = _ANTHROPIC_AVAILABLE and bool(os.environ.get("ANTHROPIC_API_KEY"))
-
     evidence_packet = assess_evidence(record)
 
+    if use_llm is False:
+        provider = "none"
+    else:
+        provider = _select_provider()
+
     def propose_fn(rec):
-        if use_llm:
-            return _propose_action_llm(rec, evidence_packet)
+        if provider == "groq":
+            return _propose_action_groq(rec, evidence_packet)
+        if provider == "anthropic":
+            return _propose_action_anthropic(rec, evidence_packet)
         return _propose_action_rule_based(rec, evidence_packet)
 
     decision = decide_with_guardrails(record, propose_fn, evidence_packet=evidence_packet)
     decision["evidence_packet"] = evidence_packet
+    decision["llm_provider_used"] = provider
     return decision
 
 
 if __name__ == "__main__":
     # Quick smoke test with a few hand-built records, including one that
-    # triggers the missing-data guardrail.
+    # triggers the missing-critical-evidence guardrail.
     test_records = [
         {
             "trans_num": "demo_fraud_1",
@@ -181,16 +245,18 @@ if __name__ == "__main__":
             "synth_days_to_dispute": 12.0, "synth_prior_dispute_count": 0,
         },
         {
-            "trans_num": "demo_missing_data_1",
+            "trans_num": "demo_critical_gap_1",
             "amt": 120.0, "category": "misc_net", "fraud_probability": 0.4,
             "distance_km": 88.0, "amt_zscore_in_category": 0.5, "hour": 20,
-            "synth_device_ip_match": True, "synth_delivery_confirmed": None,
-            "synth_dispute_reason": "product_not_received",
+            "synth_device_ip_match": None,  # critical for unauthorized_transaction
+            "synth_delivery_confirmed": True,
+            "synth_dispute_reason": "unauthorized_transaction",
             "synth_days_to_dispute": 6.0, "synth_prior_dispute_count": 1,
         },
     ]
 
-    print(f"Running in {'LLM' if (_ANTHROPIC_AVAILABLE and os.environ.get('ANTHROPIC_API_KEY')) else 'rule-based fallback'} mode\n")
+    provider = _select_provider()
+    print(f"Running with provider: {provider}\n")
 
     for rec in test_records:
         decision = get_evidence_decision(rec)

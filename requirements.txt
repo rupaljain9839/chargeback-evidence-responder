@@ -4,3 +4,5 @@ scikit-learn
 joblib
 streamlit
 anthropic
+groq
+python-dotenv
